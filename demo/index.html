@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Popkey wheel demo</title>
+<style>
+  :root {
+    --accent: #38bdf8;
+    --glass: rgba(20, 26, 38, 0.55);
+    --line: rgba(255, 255, 255, 0.10);
+    --text: #e8eef6;
+    --muted: #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e16 url("scene.jpg") center / cover no-repeat;
+    color: var(--text);
+    font: 15px/1.4 "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+  body.open { cursor: none; }
+  .glass {
+    background: var(--glass);
+    border: 1px solid var(--line);
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  }
+
+  /* Chat vocal du « jeu » : on y voit que le son part bien aux amis */
+  .voice {
+    position: absolute; top: 18px; left: 18px;
+    padding: 10px 14px; border-radius: 10px;
+    min-width: 190px;
+  }
+  .voice h2 { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
+  .member { display: flex; align-items: center; gap: 8px; height: 24px; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; transition: background .15s, box-shadow .15s; }
+  .member.talking .dot { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .25); }
+  .member .what { margin-left: auto; font-size: 12px; color: var(--accent); opacity: 0; transition: opacity .2s; }
+  .member.talking .what { opacity: 1; }
+
+  .hint {
+    position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+    padding: 9px 16px; border-radius: 999px;
+    font-size: 14px; white-space: nowrap;
+    transition: opacity .25s;
+  }
+  kbd {
+    display: inline-block; min-width: 22px; padding: 1px 6px; margin: 0 2px;
+    border-radius: 5px; background: rgba(255, 255, 255, .12);
+    font: 600 12px/18px "Segoe UI", system-ui, sans-serif; text-align: center;
+  }
+  body.open .hint { opacity: 0; }
+
+  .brand {
+    position: absolute; top: 18px; right: 18px;
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 700; font-size: 15px; opacity: .9;
+  }
+  .brand img { width: 24px; height: 24px; }
+
+  /* La roue : même dessin que dans Popkey */
+  #wheel {
+    position: absolute; left: 50%; top: 50%;
+    width: 360px; height: 360px; margin: -180px 0 0 -180px;
+    opacity: 0; transform: scale(.94);
+    transition: opacity 80ms ease-out, transform 80ms ease-out;
+    pointer-events: none;
+  }
+  body.open #wheel { opacity: 1; transform: scale(1); }
+  .slot path { fill: rgba(40, 40, 40, .9); transition: fill 60ms; }
+  .slot.on path { fill: rgba(56, 189, 248, .88); }
+  .slot text { fill: #e5e7eb; font: 500 13px "Segoe UI", system-ui, sans-serif; text-anchor: middle; dominant-baseline: middle; }
+  .slot.empty text { fill: #6b7280; font-size: 20px; }
+  .slot.on text { fill: #fff; }
+  .hub { fill: rgba(38, 38, 38, .92); }
+  .page { fill: #fff; font: 700 18px "Segoe UI", system-ui, sans-serif; text-anchor: middle; dominant-baseline: central; }
+</style>
+</head>
+<body>
+  <div class="voice glass" aria-label="Voice chat">
+    <h2>Voice chat</h2>
+    <div class="member" id="me"><span class="dot"></span>You<span class="what" id="what"></span></div>
+    <div class="member"><span class="dot"></span>Theo</div>
+    <div class="member"><span class="dot"></span>Mila</div>
+  </div>
+
+  <div class="brand"><img src="popkey.png" alt="">Popkey</div>
+
+  <svg id="wheel" viewBox="0 0 360 360" aria-hidden="true"></svg>
+
+  <div class="hint glass" id="hint">Hold the mouse button <span style="color:var(--muted)">(or</span> <kbd>F6</kbd><span style="color:var(--muted)">)</span>, move toward a sound, let go</div>
+
+<script>
+// Mêmes sons que le pack de départ de Popkey ; les cases vides affichent « + », comme dans l'appli
+const SLOTS = [
+  { name: "Thud", file: "sounds/thud.mp3" },
+  { name: "Goofy Car Horn", file: "sounds/car_horn.mp3" },
+  { name: "Fart", file: "sounds/fart.mp3" },
+  null, null, null, null, null,
+];
+const R_OUT = 176, R_IN = 62, GAP = 3.2, DEAD_ZONE = 28;
+const svg = document.getElementById("wheel");
+const NS = "http://www.w3.org/2000/svg";
+
+function polar(r, deg) {
+  const a = (deg - 90) * Math.PI / 180;
+  return [180 + r * Math.cos(a), 180 + r * Math.sin(a)];
+}
+// Case i : secteur d'anneau centré sur i × 45° (0 = en haut), séparé de ses voisins par une fente
+SLOTS.forEach((slot, i) => {
+  const mid = i * 45, half = 22.5 - GAP / 2;
+  const [x1, y1] = polar(R_OUT, mid - half), [x2, y2] = polar(R_OUT, mid + half);
+  const [x3, y3] = polar(R_IN, mid + half), [x4, y4] = polar(R_IN, mid - half);
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", "slot" + (slot ? "" : " empty"));
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", `M${x1},${y1} A${R_OUT},${R_OUT} 0 0 1 ${x2},${y2} L${x3},${y3} A${R_IN},${R_IN} 0 0 0 ${x4},${y4} Z`);
+  const [tx, ty] = polar((R_OUT + R_IN) / 2 + 4, mid);
+  const text = document.createElementNS(NS, "text");
+  text.setAttribute("x", tx); text.setAttribute("y", ty);
+  text.textContent = slot ? slot.name : "+";
+  g.append(path, text);
+  svg.append(g);
+});
+const hub = document.createElementNS(NS, "circle");
+hub.setAttribute("cx", 180); hub.setAttribute("cy", 180); hub.setAttribute("r", 22); hub.setAttribute("class", "hub");
+const page = document.createElementNS(NS, "text");
+page.setAttribute("x", 180); page.setAttribute("y", 180); page.setAttribute("class", "page");
+page.textContent = "1";
+svg.append(hub, page);
+const groups = [...svg.querySelectorAll(".slot")];
+
+// Sons : chargés au premier geste (les navigateurs bloquent le son avant)
+let ctx = null;
+const buffers = [];
+async function loadAudio() {
+  if (ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await Promise.all(SLOTS.map(async (slot, i) => {
+    if (!slot) return;
+    const data = await (await fetch(slot.file)).arrayBuffer();
+    buffers[i] = await ctx.decodeAudioData(data);
+  }));
+}
+let talkTimer = 0;
+function play(i) {
+  const buf = buffers[i];
+  if (!ctx || !buf) return;
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  src.start();
+  const me = document.getElementById("me");
+  document.getElementById("what").textContent = SLOTS[i].name;
+  me.classList.add("talking");
+  clearTimeout(talkTimer);
+  talkTimer = setTimeout(() => me.classList.remove("talking"), Math.max(900, buf.duration * 1000));
+}
+
+// Roue : on vise une case par la direction de la souris (pas sa position), comme dans le jeu
+let open = false, origin = null, hovered = -1;
+function setHovered(i) {
+  if (i === hovered) return;
+  hovered = i;
+  groups.forEach((g, k) => g.classList.toggle("on", k === i));
+}
+function openWheel(x, y) {
+  if (open) return;
+  open = true; origin = { x, y }; setHovered(-1);
+  document.body.classList.add("open");
+  loadAudio();
+}
+function closeWheel() {
+  if (!open) return;
+  open = false;
+  document.body.classList.remove("open");
+  if (hovered >= 0 && SLOTS[hovered]) play(hovered);
+  setHovered(-1);
+}
+function aim(x, y) {
+  if (!open) return;
+  const dx = x - origin.x, dy = y - origin.y;
+  if (Math.hypot(dx, dy) < DEAD_ZONE) return setHovered(-1);
+  const deg = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+  setHovered(Math.round(deg / 45) % 8);
+}
+
+let mouse = { x: innerWidth / 2, y: innerHeight / 2 };
+addEventListener("pointermove", e => { mouse = { x: e.clientX, y: e.clientY }; aim(e.clientX, e.clientY); });
+addEventListener("pointerdown", e => { if (e.button === 0) openWheel(e.clientX, e.clientY); });
+addEventListener("pointerup", e => { if (e.button === 0) closeWheel(); });
+addEventListener("blur", () => { open = false; document.body.classList.remove("open"); setHovered(-1); });
+addEventListener("keydown", e => {
+  if (e.key === "F6") { e.preventDefault(); if (!e.repeat) openWheel(mouse.x, mouse.y); }
+});
+addEventListener("keyup", e => { if (e.key === "F6") { e.preventDefault(); closeWheel(); } });
+addEventListener("contextmenu", e => e.preventDefault());
+</script>
+</body>
+</html>
